@@ -830,8 +830,8 @@ SEED_OFFSET = 15
 SEED_RADIUS = 1.5
 
 # Increased the default sleep parameter from 0.1 to 0.15 to decrease CPU load during navigation.
-SLEEP_NAVIGATION = 0.15
-SLEEP_COORDINATES = 0.05
+SLEEP_NAVIGATION = 0.17
+SLEEP_COORDINATES = 0.1
 
 BRAIN_OPACITY = 0.5
 N_CPU = psutil.cpu_count()
@@ -857,4 +857,4 @@ ROBOT_HEAD_VELOCITY_THRESHOLD = 10 #mm/s
 ROBOT_ARC_THRESHOLD_DISTANCE = 100 #mm
 ROBOT_VERSOR_SCALE_FACTOR = 70
 #Robot Working Space is defined as 800mm in Elfin manual. For safety, the value is reduced by 5%.
-ROBOT_WORKING_SPACE = 760 #mm
+ROBOT_WORKING_SPACE = 1200 #mm

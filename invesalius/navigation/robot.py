@@ -20,6 +20,8 @@ import numpy as np
 import wx
 import queue
 import threading
+import csv
+from time import time
 
 import invesalius.data.bases as db
 import invesalius.gui.dialogs as dlg
@@ -164,6 +166,14 @@ class ControlRobot(threading.Thread):
         self.target_linear_out = None
         self.target_linear_in = None
         self.target_arc = None
+        self.time_start = time()
+        self.fieldnames = ["time",
+                           "x_robot", "y_robot", "z_robot", "a_robot", "b_robot", "c_robot",
+                           "x_tracker_obj", "y_tracker_obj", "z_tracker_obj", "a_tracker_obj", "b_tracker_obj", "c_tracker_obj",
+                           "velocity_std", "target"]
+        with open('data_robot_and_tracker.csv', 'w', newline='') as csv_file:
+            csv_writer = csv.DictWriter(csv_file, fieldnames=self.fieldnames)
+            csv_writer.writeheader()
 
     def get_coordinates_from_tracker_devices(self):
         coord_robot_raw = self.trck_init_robot.Run()
@@ -284,3 +294,26 @@ class ControlRobot(threading.Thread):
                 self.object_at_target_queue.task_done()
 
             self.robot_control(current_tracker_coordinates_in_robot, current_robot_coordinates, markers_flag)
+
+            with open('data_robot_and_tracker.csv', 'a', newline='') as csv_file:
+                csv_writer = csv.DictWriter(csv_file, fieldnames=self.fieldnames)
+
+                info = {
+                    "time": time() - self.time_start,
+                    "x_robot": current_robot_coordinates[0],
+                    "y_robot": current_robot_coordinates[1],
+                    "z_robot": current_robot_coordinates[2],
+                    "a_robot": current_robot_coordinates[3],
+                    "b_robot": current_robot_coordinates[4],
+                    "c_robot": current_robot_coordinates[5],
+                    "x_tracker_obj": current_tracker_coordinates_in_robot[2][0],
+                    "y_tracker_obj": current_tracker_coordinates_in_robot[2][1],
+                    "z_tracker_obj": current_tracker_coordinates_in_robot[2][2],
+                    "a_tracker_obj": current_tracker_coordinates_in_robot[2][3],
+                    "b_tracker_obj": current_tracker_coordinates_in_robot[2][4],
+                    "c_tracker_obj": current_tracker_coordinates_in_robot[2][5],
+                    "velocity_std": self.process_tracker.velocity_std,
+                    "target": self.target_flag
+                }
+
+                csv_writer.writerow(info)
