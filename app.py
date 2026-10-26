@@ -62,23 +62,13 @@ from invesalius.pubsub import pub as Publisher
 
 FS_ENCODE = sys.getfilesystemencoding()
 LANG = None
+session: ses.Session
 
 # ------------------------------------------------------------------
 
 if sys.platform in ("linux2", "linux", "win32"):
     if not hasattr(wx, "GetXDisplay"):
         setattr(wx, "GetXDisplay", lambda: None)
-
-
-session = ses.Session()
-if session.ReadConfig():
-    lang = session.GetConfig("language")
-    session.CheckConfig()
-    if lang:
-        try:
-            LANG = lang
-        except FileNotFoundError:
-            pass
 
 
 class InVesalius(wx.App):
@@ -109,8 +99,13 @@ class InVesalius(wx.App):
         Publisher.sendMessage("Open project", filepath=path)
 
     def Startup2(self):
-        self.control = self.splash.control
-        self.frame = self.splash.main
+        splash = getattr(self, "splash", None)
+        if splash is None or getattr(splash, "main", None) is None:
+            wx.CallLater(100, self.Startup2)
+            return
+
+        self.control = splash.control
+        self.frame = splash.main
         self.SetTopWindow(self.frame)
         self.frame.Show()
         self.frame.Raise()
@@ -630,6 +625,8 @@ def init():
 
     Mostly file-system related initializations.
     """
+    global LANG, session
+
     # Is needed because of pyinstaller
     multiprocessing.freeze_support()
 
@@ -648,6 +645,16 @@ def init():
         inv_paths.create_conf_folders()
         if inv_paths.OLD_USER_INV_DIR.exists():
             inv_paths.copy_old_files()
+
+    session = ses.Session()
+    if session.ReadConfig():
+        lang = session.GetConfig("language")
+        session.CheckConfig()
+        if lang:
+            try:
+                LANG = lang
+            except FileNotFoundError:
+                pass
 
     if hasattr(sys, "frozen") and getattr(sys, "frozen") == "windows_exe":
         # Set system standard error output to file

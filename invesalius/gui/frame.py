@@ -45,7 +45,6 @@ from invesalius.data.slice_ import Slice
 from invesalius.gui import project_properties
 from invesalius.gui.interactive_shell import InteractiveShellFrame
 from invesalius.i18n import tr as _
-from invesalius.navigation.navigation import NavigationHub
 from invesalius.pubsub import pub as Publisher
 
 try:
@@ -129,6 +128,7 @@ class Frame(wx.Frame):
         self.actived_interpolated_slices = main_menu.view_menu
         self.actived_navigation_mode = main_menu.mode_menu
         self.actived_dbs_mode = main_menu.mode_dbs
+        self.actived_coregistration_mode = main_menu.mode_coregistration
         self.tools_menu = main_menu.tools_menu
 
         # Set menus, status and task bar
@@ -138,7 +138,6 @@ class Frame(wx.Frame):
         # Set TaskBarIcon
         # TaskBarIcon(self)
 
-        self.navigation_hub = None
         # Create aui manager and insert content in it
         self.__init_aui()
 
@@ -216,7 +215,7 @@ class Frame(wx.Frame):
         is_shell_focused = False
 
         # Check if the focus is on a text entry field
-        if focused and isinstance(focused, wx.TextCtrl | wx.ComboBox):
+        if focused and isinstance(focused, (wx.TextCtrl, wx.ComboBox)):
             is_search_field = True
 
         # Check if the shell is focused
@@ -281,8 +280,6 @@ class Frame(wx.Frame):
         # panel by publishing an 'Add marker' message.
         #
         viewers_panel = viewers.Panel(self)
-        if ses.Session().GetConfig("mode") == const.MODE_NAVIGATOR:
-            self.navigation_hub = NavigationHub(window=self)
         task_panel = tasks.Panel(self)
         import_panel = imp.Panel(self)
         import_bitmap_panel = imp_bmp.Panel(self)
@@ -442,13 +439,6 @@ class Frame(wx.Frame):
 
         # TODO: Allow saving and restoring perspectives
         self.perspective_all = aui_manager.SavePerspective()
-
-        if self.navigation_hub is not None:
-            viewers_panel.p4.viewer.SetNavigationMode(
-                True,
-                markers=tuple(self.navigation_hub.markers.list),
-                main_coil=self.navigation_hub.navigation.main_coil,
-            )
 
         self.Layout()
 
@@ -835,8 +825,6 @@ class Frame(wx.Frame):
             self.OnTracheSegmentation()
         elif id == const.ID_SEGMENTATION_MANDIBLE_CT:
             self.OnMandibleCTSegmentation()
-        elif id == const.ID_SEGMENTATION_TOTALSEG:
-            self.OnTotalSegmentation()
         elif id == const.ID_PLANNING_CRANIOPLASTY:
             self.OnImplantCTSegmentation()
 
@@ -851,8 +839,17 @@ class Frame(wx.Frame):
             Publisher.sendMessage("Hide dbs folder")
             Publisher.sendMessage("Show target button")
             self.actived_dbs_mode.Check(0)
+            self.actived_coregistration_mode.Check(False)
             st = self.actived_navigation_mode.IsChecked(const.ID_MODE_NAVIGATION)
             self.OnNavigationMode(st)
+
+        elif id == const.ID_MODE_COREGISTRATION:
+            Publisher.sendMessage("Hide dbs folder")
+            Publisher.sendMessage("Hide target button")
+            self.actived_dbs_mode.Check(False)
+            self.actived_navigation_mode.Check(const.ID_MODE_NAVIGATION, False)
+            st = self.actived_coregistration_mode.IsChecked()
+            self.OnNavigationMode(const.MODE_COREGISTRATION if st else False)
 
         elif id == const.ID_MODE_DBS:
             self.OnDbsMode()
@@ -920,6 +917,7 @@ class Frame(wx.Frame):
     def OnDbsMode(self):
         st = self.actived_dbs_mode.IsChecked()
         Publisher.sendMessage("Hide target button")
+        self.actived_coregistration_mode.Check(False)
         if st:
             self.OnNavigationMode(st)
             Publisher.sendMessage("Show dbs folder")
@@ -936,14 +934,7 @@ class Frame(wx.Frame):
                 wx.OK | wx.ICON_INFORMATION,
             )
             self._show_navigator_message = False
-        if status and self.navigation_hub is None:
-            self.navigation_hub = NavigationHub(window=self)
-
-        markers = tuple(self.navigation_hub.markers.list) if status else ()
-        main_coil = self.navigation_hub.navigation.main_coil if status else None
-        Publisher.sendMessage(
-            "Set navigation mode", status=status, markers=markers, main_coil=main_coil
-        )
+        Publisher.sendMessage("Set navigation mode", status=status)
         if not status:
             Publisher.sendMessage("Remove sensors ID")
 
@@ -1233,25 +1224,6 @@ class Frame(wx.Frame):
             dlg.ShowModal()
             dlg.Destroy()
 
-    def OnTotalSegmentation(self):
-        from invesalius.gui import deep_learning_seg_dialog, total_seg_dialog
-
-        if deep_learning_seg_dialog.HAS_TORCH:
-            dlg = total_seg_dialog.TotalSegmenterDialog(self)
-            dlg.Show()
-        else:
-            dlg = wx.MessageDialog(
-                self,
-                _(
-                    "It's not possible to run TotalSegmentator because your system doesn't have the following modules installed:"
-                )
-                + " Torch",
-                "InVesalius 3 - TotalSegmentator",
-                wx.ICON_INFORMATION | wx.OK,
-            )
-            dlg.ShowModal()
-            dlg.Destroy()
-
     def OnTracheSegmentation(self):
         from invesalius.gui import deep_learning_seg_dialog
 
@@ -1471,7 +1443,6 @@ class MenuBar(wx.MenuBar):
             const.ID_SEGMENTATION_SUBPART,
             const.ID_SEGMENTATION_TRACHEA,
             const.ID_SEGMENTATION_MANDIBLE_CT,
-            const.ID_SEGMENTATION_TOTALSEG,
             const.ID_PLANNING_CRANIOPLASTY,
             const.ID_MASK_DENSITY_MEASURE,
             const.ID_CREATE_SURFACE,
@@ -1648,7 +1619,6 @@ class MenuBar(wx.MenuBar):
         )
         segmentation_menu.Append(const.ID_SEGMENTATION_TRACHEA, _("Trachea segmentation (CT)"))
         segmentation_menu.Append(const.ID_SEGMENTATION_MANDIBLE_CT, _("Mandible segmentation (CT)"))
-        segmentation_menu.Append(const.ID_SEGMENTATION_TOTALSEG, _("TotalSegmentator (CT / MRI)"))
 
         # Surface Menu
         surface_menu = wx.Menu()
@@ -1757,6 +1727,12 @@ class MenuBar(wx.MenuBar):
             "",
             wx.ITEM_CHECK,
         )
+        self.mode_coregistration = nav_menu.Append(
+            const.ID_MODE_COREGISTRATION,
+            _("Corregistration Mode"),
+            "",
+            wx.ITEM_CHECK,
+        )
         # Under development
         self.mode_dbs = nav_menu.Append(
             const.ID_MODE_DBS, _("Deep Brain Stimulation Mode\tCtrl+B"), "", wx.ITEM_CHECK
@@ -1764,8 +1740,12 @@ class MenuBar(wx.MenuBar):
         self.mode_dbs.Enable(0)
         mode_menu.Append(-1, _("Navigation Mode"), nav_menu)
 
-        v = self.NavigationModeStatus()
-        self.mode_menu.Check(const.ID_MODE_NAVIGATION, v)
+        mode = ses.Session().GetConfig("mode")
+        self.mode_menu.Check(const.ID_MODE_NAVIGATION, mode == const.MODE_NAVIGATOR)
+        self.mode_menu.Check(
+            const.ID_MODE_COREGISTRATION,
+            mode == const.MODE_COREGISTRATION,
+        )
 
         self.actived_navigation_mode = self.mode_menu
 
@@ -1819,15 +1799,16 @@ class MenuBar(wx.MenuBar):
         session = ses.Session()
         mode = session.GetConfig("mode")
 
-        return mode == 1
+        return mode in const.NAVIGATION_MODES
 
     def OnUpdateSliceInterpolation(self):
         v = self.SliceInterpolationStatus()
         self.view_menu.Check(const.ID_VIEW_INTERPOLATED, v)
 
     def OnUpdateNavigationMode(self):
-        v = self.NavigationModeStatus()
-        self.mode_menu.Check(const.ID_MODE_NAVIGATION, v)
+        mode = ses.Session().GetConfig("mode")
+        self.mode_menu.Check(const.ID_MODE_NAVIGATION, mode == const.MODE_NAVIGATOR)
+        self.mode_menu.Check(const.ID_MODE_COREGISTRATION, mode == const.MODE_COREGISTRATION)
 
     def AddPluginsItems(self, items):
         for menu_item in self.plugins_menu.GetMenuItems():
@@ -1903,8 +1884,10 @@ class MenuBar(wx.MenuBar):
         value = nav_status
         if value:
             self.FindItemById(const.ID_MODE_NAVIGATION).Enable(False)
+            self.FindItemById(const.ID_MODE_COREGISTRATION).Enable(False)
         else:
             self.FindItemById(const.ID_MODE_NAVIGATION).Enable(True)
+            self.FindItemById(const.ID_MODE_COREGISTRATION).Enable(True)
 
     def OnAddMask(self, mask):
         self.num_masks += 1

@@ -4217,6 +4217,9 @@ msgstr "Importação/Exportação de marcadores:"
 msgid "Coregistration"
 msgstr "Coregistro"
 
+msgid "Corregistration Mode"
+msgstr "Modo de corregistro"
+
 #: invesalius/gui/task_navigator.py:336
 msgid "Imports"
 msgstr "Importações"

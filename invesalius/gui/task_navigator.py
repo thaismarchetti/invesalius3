@@ -59,7 +59,6 @@ import invesalius.project as prj
 import invesalius.session as ses
 from invesalius import inv_paths, utils
 from invesalius.data.markers.marker import Marker, MarkerType
-from invesalius.data.markers.surface_geometry import SurfaceGeometry
 from invesalius.gui import deep_learning_seg_dialog
 from invesalius.gui.widgets.fiducial_buttons import OrderedFiducialButtons
 from invesalius.i18n import tr as _
@@ -310,7 +309,10 @@ class InnerFoldPanel(wx.Panel):
         return (
             self.tracker.AreTrackerFiducialsSet()
             and self.image.AreImageFiducialsSet()
-            and self.navigation.CoilSelectionDone()
+            and (
+                ses.Session().GetConfig("mode") == const.MODE_COREGISTRATION
+                or self.navigation.CoilSelectionDone()
+            )
         )
 
     def OpenNavigation(self):
@@ -340,7 +342,9 @@ class CoregistrationPanel(wx.Panel):
         book.AddPage(TrackerPage(book, nav_hub), _("Patient"))
         book.AddPage(RefinePage(book, nav_hub), _("Refine"))
         book.AddPage(StylusPage(book, nav_hub), _("Stylus"))
-        book.AddPage(StimulatorPage(book, nav_hub), _("TMS Coil"))
+        self.mode = ses.Session().GetConfig("mode")
+        if self.mode != const.MODE_COREGISTRATION:
+            book.AddPage(StimulatorPage(book, nav_hub), _("TMS Coil"))
 
         session = ses.Session()
         project_status = session.GetConfig("project_status")
@@ -436,7 +440,10 @@ class CoregistrationPanel(wx.Panel):
         self.book.SetSelection(const.STYLUS_PAGE)
 
     def _FoldStimulator(self):
-        self.book.SetSelection(const.STIMULATOR_PAGE)
+        if self.mode == const.MODE_COREGISTRATION:
+            Publisher.sendMessage("Open navigation menu")
+        else:
+            self.book.SetSelection(const.STIMULATOR_PAGE)
 
 
 class ImportsPage(wx.Panel):
@@ -653,6 +660,7 @@ class HeadPage(wx.Panel):
 
         # Create mask selection combo box
         self.combo_mask = wx.ComboBox(self, choices=[], style=wx.CB_READONLY)
+        self.mask_indices = []
         top_sizer.Add(self.combo_mask, 1, wx.EXPAND | wx.LEFT | wx.RIGHT, 20)
 
         # Add label above mask threshold bar
@@ -729,10 +737,13 @@ class HeadPage(wx.Panel):
         Publisher.subscribe(self.SetItemsColour, "Set GUI items colour")
         Publisher.subscribe(self.OnRemoveMasks, "Remove masks")
         Publisher.subscribe(self.AddMask, "Add mask")
+        Publisher.subscribe(self.RefreshMaskList, "Enable state project")
         Publisher.subscribe(self.OnCloseProject, "Close project data")
+        self.RefreshMaskList()
 
     def OnCloseProject(self):
-        self.OnRemoveMasks(list(reversed(range(self.combo_mask.GetCount()))))
+        self.combo_mask.Clear()
+        self.mask_indices.clear()
 
     def __bind_events_wx(self):
         self.combo_mask.Bind(wx.EVT_COMBOBOX, self.OnComboName)
@@ -740,34 +751,57 @@ class HeadPage(wx.Panel):
         self.Bind(grad.EVT_THRESHOLD_CHANGING, self.OnSlideChanging, self.gradient)
 
     def OnComboName(self, evt):
-        mask_index = evt.GetSelection()
+        selection = evt.GetSelection()
+        if selection == wx.NOT_FOUND:
+            return
+        mask_index = self.mask_indices[selection]
         Publisher.sendMessage("Change mask selected", index=mask_index)
         Publisher.sendMessage("Show mask", index=mask_index, value=True)
 
     def AddMask(self, mask):
+        if mask.index in self.mask_indices:
+            return
+        self.mask_indices.append(mask.index)
         self.combo_mask.Append(mask.name)
 
     def SelectMaskName(self, index):
         if index >= 0:
-            self.combo_mask.SetSelection(index)
+            try:
+                selection = self.mask_indices.index(index)
+            except ValueError:
+                self.combo_mask.SetSelection(wx.NOT_FOUND)
+            else:
+                self.combo_mask.SetSelection(selection)
         else:
             self.combo_mask.SetValue("")
 
     def OnRemoveMasks(self, mask_indexes):
         self.combo_mask.Freeze()
         try:
-            count = self.combo_mask.GetCount()
-            idxs = sorted(set(mask_indexes), reverse=True)
-
-            if len(idxs) >= count:
-                self.combo_mask.Clear()
-                return
-
-            for i in idxs:
-                if 0 <= i < self.combo_mask.GetCount():
-                    self.combo_mask.Delete(i)
+            selections = sorted(
+                (
+                    self.mask_indices.index(index)
+                    for index in set(mask_indexes)
+                    if index in self.mask_indices
+                ),
+                reverse=True,
+            )
+            for selection in selections:
+                self.combo_mask.Delete(selection)
+                del self.mask_indices[selection]
         finally:
             self.combo_mask.Thaw()
+
+    def RefreshMaskList(self, state=True):
+        self.combo_mask.Clear()
+        self.mask_indices.clear()
+        if not state:
+            return
+
+        for index, mask in sorted(prj.Project().mask_dict.items()):
+            self.AddMask(mask)
+            if mask.is_shown:
+                self.combo_mask.SetSelection(self.mask_indices.index(index))
 
     def SetThresholdBounds(self, threshold_range):
         thresh_min = threshold_range[0]
@@ -818,13 +852,6 @@ class HeadPage(wx.Panel):
             self.SmoothSurface()
 
         self.VisualizeScalpSurface()
-
-        try:
-            if SurfaceGeometry().GetSmoothedScalpSurface() is None:
-                raise RuntimeError(_("The scalp surface does not contain usable geometry."))
-        except RuntimeError as error:
-            wx.MessageBox(str(error), _("InVesalius 3"), wx.OK | wx.ICON_WARNING)
-            return
 
         if self.brain_segmentation_checkbox.IsChecked():
             self.SegmentBrain()
@@ -1728,7 +1755,10 @@ class StylusPage(wx.Panel):
         Publisher.sendMessage("Move to refine page")
 
     def OnNext(self, evt):
-        Publisher.sendMessage("Move to stimulator page")
+        if ses.Session().GetConfig("mode") == const.MODE_COREGISTRATION:
+            Publisher.sendMessage("Open navigation menu")
+        else:
+            Publisher.sendMessage("Move to stimulator page")
 
 
 class StimulatorPage(wx.Panel):
@@ -1753,11 +1783,6 @@ class StimulatorPage(wx.Panel):
         btn_edit = wx.Button(self, -1, _("Edit coil registration in Preferences"))
         btn_edit.SetToolTip("Open preferences menu")
         btn_edit.Bind(wx.EVT_BUTTON, self.OnEditPreferences)
-
-        self.cb_probe_only = wx.CheckBox(self, -1, _("EEG / probe only (no coil)"))
-        self.cb_probe_only.SetToolTip(_("Allow EEG navigation using only the probe"))
-        self.cb_probe_only.SetValue(self.navigation.probe_only)
-        self.cb_probe_only.Bind(wx.EVT_CHECKBOX, self.OnProbeOnly)
 
         back_button = wx.Button(self, label="Back")
         back_button.Bind(wx.EVT_BUTTON, self.OnBack)
@@ -1789,7 +1814,6 @@ class StimulatorPage(wx.Panel):
             [
                 (border, 0, wx.ALIGN_CENTER | wx.TOP, 10),
                 stretch_spacer,
-                (self.cb_probe_only, 0, wx.ALIGN_CENTER | wx.BOTTOM, 10),
                 (bottom_sizer, 0, wx.EXPAND | wx.BOTTOM, 10),
             ]
         )
@@ -1807,12 +1831,6 @@ class StimulatorPage(wx.Panel):
         Publisher.sendMessage("Enable start navigation button", enabled=False)
 
     def CoilSelectionDone(self, done):
-        if self.navigation.probe_only:
-            self.lbl.SetLabel(_("Ready for navigation (probe-only mode)"))
-            self.next_button.Enable(True)
-            self.lbl.Show()
-            return
-
         if done:
             self.lbl.SetLabel(
                 f"Ready for navigation with {self.navigation.n_coils} coil{'' if self.navigation.n_coils == 1 else 's'}!"
@@ -1822,12 +1840,6 @@ class StimulatorPage(wx.Panel):
 
         self.next_button.Enable(done)
         self.lbl.Show()
-
-    def OnProbeOnly(self, evt):
-        enabled = self.cb_probe_only.GetValue()
-        self.navigation.SetProbeOnly(enabled)
-        self.CoilSelectionDone(self.navigation.CoilSelectionDone())
-        Publisher.sendMessage("Probe-only navigation mode changed", enabled=enabled)
 
     def OnEditPreferences(self, evt):
         Publisher.sendMessage("Open preferences menu", page=3)
@@ -2048,7 +2060,6 @@ class RobotButtonsPanel(wx.Panel):
         Publisher.subscribe(self.EnableRobotTrackTargetButton, "Enable robot button")
         Publisher.subscribe(self.PressRobotMoveAwayButton, "Press move away button")
         Publisher.subscribe(self.OnEnableRobotButtons, "Enable robot")
-        Publisher.subscribe(self.UpdateRobotButtons, "Robot transformation matrix set")
 
     # Toggle Button Helpers
     def UpdateToggleButton(self, ctrl, state=None):
@@ -2091,7 +2102,6 @@ class RobotButtonsPanel(wx.Panel):
         #   - Target is set
         #   - Target mode is on
         #   - Robot is connected
-        #   - Robot tracking registration is available
         #   - The name of the coil attached to robot is being tracked
         robot_coil = self.robot.GetCoilName()
         if self.navigation.n_coils > 1:
@@ -2103,7 +2113,7 @@ class RobotButtonsPanel(wx.Panel):
             self.nav_status
             and self.target_selected
             and self.target_mode
-            and self.robot.IsReady()
+            and self.robot.IsConnected()
             and coil_check
         )
 
@@ -2198,13 +2208,15 @@ class ControlPanel(wx.Panel):
     def __init__(self, parent, nav_hub):
         wx.Panel.__init__(self, parent)
 
+        self.coregistration_mode = (
+            ses.Session().GetConfig("mode") == const.MODE_COREGISTRATION
+        )
         self.navigation = nav_hub.navigation
         self.tracker = nav_hub.tracker
         self.robots = nav_hub.robots
         self.icp = nav_hub.icp
         self.image = nav_hub.image
         self.mep_visualizer = nav_hub.mep_visualizer
-        self.eeg_electrodes = nav_hub.eeg_electrodes
 
         self.nav_status = False
 
@@ -2263,9 +2275,10 @@ class ControlPanel(wx.Panel):
         track_object_button.Enable(True)
         track_object_button.SetValue(False)
         track_object_button.SetToolTip(tooltip)
-        track_object_button.Bind(wx.EVT_TOGGLEBUTTON, self.OnTrackObjectButton)
+        track_object_button.Bind(
+            wx.EVT_TOGGLEBUTTON, partial(self.OnTrackObjectButton, ctrl=track_object_button)
+        )
         self.track_object_button = track_object_button
-        self._track_object_enabled = True
 
         # Toggle button for allowing triggering only if coil is at target
         tooltip = _("Allow triggering only if the coil is at the target")
@@ -2317,21 +2330,6 @@ class ControlPanel(wx.Panel):
         self.UpdateToggleButton(show_probe_button, False)  # the probe is hidden at start
         show_probe_button.Bind(wx.EVT_TOGGLEBUTTON, self.OnShowProbe)
         self.show_probe_button = show_probe_button
-
-        # Toggle button for digitizing EEG electrodes with the probe.
-        tooltip = _("Enable digitization of EEG electrodes with the probe")
-        BMP_SHOW_PROBE = wx.Bitmap(
-            str(inv_paths.ICON_DIR.joinpath("brain_eeg.png")), wx.BITMAP_TYPE_PNG
-        )
-        eeg_registration_button = wx.ToggleButton(
-            scroll_panel, -1, "", style=pbtn.PB_STYLE_SQUARE, size=ICON_SIZE
-        )
-        eeg_registration_button.SetBackgroundColour(RED_COLOR)
-        eeg_registration_button.SetBitmap(BMP_SHOW_PROBE)
-        eeg_registration_button.SetValue(self.eeg_electrodes.registration_active)
-        eeg_registration_button.SetToolTip(tooltip)
-        eeg_registration_button.Bind(wx.EVT_TOGGLEBUTTON, self.OnEEGRegistrationButton)
-        self.eeg_registration_button = eeg_registration_button
 
         # Toggle Button to use serial port to trigger pulse signal and create markers
         tooltip = _("Enable serial port communication to trigger pulse and create markers")
@@ -2421,7 +2419,6 @@ class ControlPanel(wx.Panel):
                 (lock_to_target_button),
                 (show_coil_button),
                 (show_probe_button),
-                (eeg_registration_button),
                 (show_motor_map_button),
             ]
         )
@@ -2445,6 +2442,22 @@ class ControlPanel(wx.Panel):
         self.__bind_events()
         self.Update()
         self.LoadConfig()
+        if self.coregistration_mode:
+            self.navigation.track_coil = False
+            self.UpdateToggleButton(self.track_object_button, False)
+            for button in (
+                self.tractography_checkbox,
+                self.track_object_button,
+                self.lock_to_target_button,
+                self.show_coil_button,
+                self.efield_checkbox,
+                self.target_mode_button,
+                self.show_motor_map_button,
+            ):
+                button.Hide()
+            scroll_panel.Layout()
+            scroll_panel.SetupScrolling(scroll_x=False, scroll_y=True)
+            self.Layout()
 
     def __bind_events(self):
         Publisher.subscribe(self.OnStartNavigation, "Start navigation")
@@ -2461,13 +2474,8 @@ class ControlPanel(wx.Panel):
 
         # Externally press/unpress and enable/disable buttons.
         Publisher.subscribe(self.PressShowProbeButton, "Press show-probe button")
-        Publisher.subscribe(self.OnEEGRegistrationModeChanged, "EEG registration mode changed")
-        Publisher.subscribe(self.OnCreateEEGElectrode, "Create EEG electrode")
 
         Publisher.subscribe(self.OnCoilSelectionDone, "Coil selection done")
-        Publisher.subscribe(
-            self.OnProbeOnlyNavigationModeChanged, "Probe-only navigation mode changed"
-        )
 
         Publisher.subscribe(self.PressShowCoilButton, "Press show-coil button")
         Publisher.subscribe(self.EnableShowCoilButton, "Enable show-coil button")
@@ -2552,9 +2560,16 @@ class ControlPanel(wx.Panel):
         nav_id = btn_nav.GetValue()
         if not nav_id:
             wx.CallAfter(Publisher.sendMessage, "Stop navigation")
+            tooltip = _("Start navigation")
+            btn_nav.SetToolTip(tooltip)
+            btn_nav.SetLabelText(_("Start navigation"))
         else:
             Publisher.sendMessage("Start navigation")
-            if not self.nav_status:
+            if self.nav_status:
+                tooltip = _("Stop navigation")
+                btn_nav.SetToolTip(tooltip)
+                btn_nav.SetLabelText(_("Stop navigation"))
+            else:
                 btn_nav.SetValue(False)
 
     def OnStopNavigation(self):
@@ -2566,11 +2581,18 @@ class ControlPanel(wx.Panel):
         self.navigation.StopNavigation()
 
     def UnsetTarget(self, marker):
+        self.navigation.target = None
         self.target_selected = False
         self.UpdateTargetButton()
 
     def SetTarget(self, marker):
-        self.navigation.SetTarget(marker)
+        coord = marker.position + marker.orientation
+
+        # TODO: The coordinate systems of slice viewers and volume viewer should be unified, so that this coordinate
+        #   flip wouldn't be needed.
+        coord[1] = -coord[1]
+
+        self.navigation.target = coord
 
         self.EnableToggleButton(self.lock_to_target_button, 1)
         self.UpdateToggleButton(self.lock_to_target_button, True)
@@ -2585,10 +2607,6 @@ class ControlPanel(wx.Panel):
             self.current_orientation = None, None, None
         else:
             self.nav_status = True
-        self.btn_nav.SetValue(nav_status)
-        label = _("Stop navigation") if nav_status else _("Start navigation")
-        self.btn_nav.SetToolTip(label)
-        self.btn_nav.SetLabelText(label)
 
     def OnCheckStatus(self, nav_status, vis_status):
         if nav_status:
@@ -2599,26 +2617,10 @@ class ControlPanel(wx.Panel):
             self.UpdateToggleButton(self.checkbox_serial_port)
 
     def OnCoilSelectionDone(self, done):
-        if self.navigation.probe_only:
+        if self.coregistration_mode:
             return
-
         self.PressTrackObjectButton(done)
         self.PressShowCoilButton(pressed=done)
-
-    def OnProbeOnlyNavigationModeChanged(self, enabled):
-        if enabled:
-            self.PressTrackObjectButton(False)
-            self.PressShowCoilButton(False)
-            self.EnableTrackObjectButton(False)
-            self.EnableToggleButton(self.show_coil_button, False)
-            self.PressShowProbeButton(True)
-            return
-
-        coils_ready = len(self.navigation.coil_registrations) == self.navigation.n_coils
-        self.PressTrackObjectButton(coils_ready)
-        self.PressShowCoilButton(coils_ready)
-        self.EnableTrackObjectButton(coils_ready)
-        self.EnableToggleButton(self.show_coil_button, coils_ready)
 
     # Tractography
     def OnTractographyCheckbox(self, evt, ctrl):
@@ -2664,20 +2666,17 @@ class ControlPanel(wx.Panel):
 
     # 'Track object' button
     def EnableTrackObjectButton(self, enabled):
-        self._track_object_enabled = enabled
+        self.EnableToggleButton(self.track_object_button, enabled)
         self.UpdateToggleButton(self.track_object_button)
-        # Apply Enable last: changing the colour can re-enable native Windows buttons.
-        self.track_object_button.Enable(enabled and not self.eeg_electrodes.registration_active)
 
     def PressTrackObjectButton(self, pressed):
         self.UpdateToggleButton(self.track_object_button, pressed)
         self.OnTrackObjectButton()
 
-    def OnTrackObjectButton(self, evt=None):
-        pressed = (
-            self.track_object_button.GetValue() and not self.eeg_electrodes.registration_active
-        )
-        self.UpdateToggleButton(self.track_object_button, pressed)
+    def OnTrackObjectButton(self, evt=None, ctrl=None):
+        if ctrl is not None:
+            self.UpdateToggleButton(ctrl)
+        pressed = self.track_object_button.GetValue()
         Publisher.sendMessage("Track object", enabled=pressed)
         if not pressed and self.target_mode_button.GetValue():
             Publisher.sendMessage("Press target mode button", pressed=False)
@@ -2685,7 +2684,6 @@ class ControlPanel(wx.Panel):
         # Automatically press or unpress 'Show coil' and 'Show probe' button.
         Publisher.sendMessage("Press show-coil button", pressed=pressed)
         Publisher.sendMessage("Press show-probe button", pressed=(not pressed))
-        self.EnableTrackObjectButton(self._track_object_enabled)
 
     # 'Lock to Target' button
     def OnLockToTargetButton(self, evt, ctrl):
@@ -2727,73 +2725,9 @@ class ControlPanel(wx.Panel):
         self.OnShowProbe()
 
     def OnShowProbe(self, evt=None):
-        active = self.eeg_electrodes.registration_active
-        pressed = self.show_probe_button.GetValue() or active
-        self.UpdateToggleButton(self.show_probe_button, pressed)
-        self.show_probe_button.Enable(not active)
+        self.UpdateToggleButton(self.show_probe_button)
+        pressed = self.show_probe_button.GetValue()
         Publisher.sendMessage("Show probe in viewer volume", state=pressed)
-
-    def OnEEGRegistrationButton(self, evt):
-        active = self.eeg_registration_button.GetValue()
-        if active and not self.eeg_electrodes.prepare_scalp_surface():
-            self.UpdateToggleButton(self.eeg_registration_button, False)
-            wx.MessageBox(
-                _("Create a 3D scalp surface before registering EEG electrodes."),
-                _("InVesalius 3"),
-                wx.OK | wx.ICON_WARNING,
-            )
-            return
-
-        self.eeg_electrodes.set_registration_active(active)
-
-    def OnCreateEEGElectrode(
-        self, position=None, colour=None, size=None, label=None, session_id=None
-    ):
-        """Handle only the UI decisions for an EEG capture prepared by the manager."""
-        try:
-            capture = self.eeg_electrodes.prepare_capture(position)
-        except RuntimeError as error:
-            wx.MessageBox(str(error), _("InVesalius 3"), wx.OK | wx.ICON_WARNING)
-            return
-
-        if capture.needs_confirmation:
-            message = (
-                _(
-                    "The projection to the scalp surface moved the electrode by %.1f mm "
-                    "(above the 3 mm limit). This may indicate an inaccurate capture.\n\n"
-                    "Do you want to keep this electrode anyway?"
-                )
-                % capture.distance_mm
-            )
-            dialog = wx.MessageDialog(
-                self,
-                message,
-                _("Displacement Warning"),
-                wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING,
-            )
-            try:
-                keep_electrode = dialog.ShowModal() == wx.ID_YES
-            finally:
-                dialog.Destroy()
-            if not keep_electrode:
-                return
-
-        self.eeg_electrodes.create_from_capture(
-            capture,
-            label=label,
-            colour=colour if colour is not None else (0.0, 1.0, 0.0),
-            size=size if size is not None else 2.0,
-            session_id=session_id if session_id is not None else 1,
-            focus=True,
-        )
-
-    def OnEEGRegistrationModeChanged(self, active):
-        self.UpdateToggleButton(self.eeg_registration_button, active)
-        if active:
-            self.PressTrackObjectButton(False)
-        else:
-            self.EnableTrackObjectButton(self._track_object_enabled)
-            self.OnShowProbe()
 
     # 'Serial Port Com'
     def OnEnableSerialPort(self, evt, ctrl):
@@ -2897,7 +2831,6 @@ class MarkersPanel(wx.Panel, ColumnSorterMixin):
 
         self.navigation = nav_hub.navigation
         self.markers = nav_hub.markers
-        self.eeg_electrodes = nav_hub.eeg_electrodes
         self.robots = nav_hub.robots
 
         if has_mTMS:
@@ -3335,9 +3268,8 @@ class MarkersPanel(wx.Panel, ColumnSorterMixin):
 
     def UpdateCurrentCoord(self, position):
         self.current_position = list(position[:3])
-        if self.navigation.track_coil and len(position) >= 6:
-            self.current_orientation = list(position[3:6])
-        else:
+        self.current_orientation = list(position[3:])
+        if not self.navigation.track_coil:
             self.current_orientation = None, None, None
 
     def UpdateNavigationStatus(self, nav_status, vis_status):
@@ -3354,6 +3286,7 @@ class MarkersPanel(wx.Panel, ColumnSorterMixin):
         coord_offset=(0, 0, 0),
         coord_offset_w=(0, 0, 0),
         coil_name=None,
+        **kwargs,
     ):
         self.current_seed = coord_offset_w
 
@@ -3857,7 +3790,7 @@ class MarkersPanel(wx.Panel, ColumnSorterMixin):
                     points_per_ring=config.get("points_per_ring", 6),
                     spacing=config["spacing"],
                 )
-            except (ValueError, RuntimeError) as e:
+            except ValueError as e:
                 wx.MessageBox(str(e), _("InVesalius 3"), wx.OK | wx.ICON_ERROR)
         grid_dlg.Destroy()
 
@@ -4643,17 +4576,6 @@ class MarkersPanel(wx.Panel, ColumnSorterMixin):
         cortex_position_orientation=None,
         mep_value=None,
     ):
-        if marker_type is None and self.eeg_electrodes.registration_active:
-            Publisher.sendMessage(
-                "Create EEG electrode",
-                position=position,
-                colour=colour if colour is not None else self.marker_colour,
-                size=size if size is not None else self.marker_size,
-                label=label,
-                session_id=session_id if session_id is not None else self.current_session,
-            )
-            return
-
         if label is None:
             label = self.GetNextMarkerLabel()
 
@@ -4795,10 +4717,7 @@ class MarkersPanel(wx.Panel, ColumnSorterMixin):
             self.marker_list_ctrl.Hide()
 
             # Create markers from the dictionary.
-            self.eeg_electrodes.import_legacy_markers(markers_data)
             for data in markers_data:
-                if data.get("marker_type") == 5:
-                    continue
                 marker = Marker(version=version)
                 marker.from_dict(data)
 
@@ -5013,6 +4932,6 @@ class MarkersPanel(wx.Panel, ColumnSorterMixin):
 
         self.marker_list_ctrl.EnsureVisible(num_items)
 
-        # Wait for all 'Add marker' listeners to create the 3D actors before focusing.
+        # Focus on the added marker.
         if focus:
-            wx.CallAfter(self.FocusOnMarker, num_items)
+            self.FocusOnMarker(num_items)

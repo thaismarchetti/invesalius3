@@ -126,7 +126,7 @@ class Panel(wx.Panel):
             .Centre()
             .Caption(
                 _("Navigation")
-                if ses.Session().GetConfig("mode") == const.MODE_NAVIGATOR
+                if ses.Session().GetConfig("mode") in const.NAVIGATION_MODES
                 else _("Volume")
             )
             .MaximizeButton(True)

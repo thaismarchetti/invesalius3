@@ -17,6 +17,8 @@
 #    detalhes.
 # --------------------------------------------------------------------------
 
+import sys
+
 import wx
 import wx.lib.agw.foldpanelbar as fpb
 
@@ -133,15 +135,17 @@ class Panel(wx.Panel):
     def __bind_events(self):
         Publisher.subscribe(self.SetNavigationMode, "Set navigation mode")
 
-    def SetNavigationMode(self, status, markers=(), main_coil=None):
+    def SetNavigationMode(self, status):
         # Stop tracking while its controls and callbacks still exist, before
         # rebuilding the task panel and switching back to the general 3D scene.
-        if not status and ses.Session().GetConfig("mode") == const.MODE_NAVIGATOR:
+        current_mode = ses.Session().GetConfig("mode")
+        if not status and current_mode in const.NAVIGATION_MODES:
             Publisher.sendMessage("Stop navigation")
         self.navigation_mode_status = status
         session = ses.Session()
         if status:
-            session.SetConfig("mode", const.MODE_NAVIGATOR)
+            mode = const.MODE_NAVIGATOR if status is True else status
+            session.SetConfig("mode", mode)
         else:
             Publisher.sendMessage("Hide target button")
             session.SetConfig("mode", const.MODE_RP)
@@ -164,7 +168,7 @@ class LowerTaskPanel(wx.Panel):
         fold_panel = fpb.FoldPanelBar(self, -1, style=FPB_DEFAULT_STYLE)
 
         self.fold_panel = fold_panel
-        fold_panel.Bind(fpb.EVT_CAPTIONBAR, self.OnLayoutChanged)
+        fold_panel.Bind(fpb.EVT_CAPTIONBAR, self.OnCaptionBar)
 
         self.enable_items = []
         self.overwrite = False
@@ -190,7 +194,7 @@ class LowerTaskPanel(wx.Panel):
         # npanel = wx.Panel(self, -1)
         self.npanel = nb.NotebookPanel(item)
 
-        self.npanel.Fit()
+        self.__calc_best_size(self.npanel)
 
         fold_panel.AddFoldPanelWindow(
             item,
@@ -211,11 +215,34 @@ class LowerTaskPanel(wx.Panel):
         self.SetStateProjectClose()
         self.__bind_events()
 
+    def __calc_best_size(self, panel):
+        parent = panel.GetParent()
+        panel.Reparent(self)
+
+        gbs = self.gbs
+        fold_panel = self.fold_panel
+
+        # Calculating the size
+        gbs.AddGrowableRow(1, 1)
+        # gbs.AddGrowableRow(0, 1)
+        gbs.Add(fold_panel, (0, 0), flag=wx.EXPAND)
+        gbs.Add(panel, (1, 0), flag=wx.EXPAND)
+        gbs.Layout()
+        self.Fit()
+        size = panel.GetSize()
+
+        gbs.Remove(1)
+        gbs.Remove(0)
+        gbs.RemoveGrowableRow(1)
+
+        panel.Reparent(parent)
+        panel.SetInitialSize(size)
+        self.SetInitialSize(self.GetSize())
+
     def __bind_events(self):
         Publisher.subscribe(self.OnEnableState, "Enable state project")
-        self.npanel.book.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.OnLayoutChanged)
 
-    def OnLayoutChanged(self, evt):
+    def OnCaptionBar(self, evt):
         evt.Skip()
         wx.CallAfter(self.ResizeFPB)
 
@@ -235,17 +262,20 @@ class LowerTaskPanel(wx.Panel):
 
     def ResizeFPB(self):
         item = self.enable_items[0]
+        # Check if the fold panel item is visually expanded
+        is_expanded = item.IsExpanded()
 
-        if item.IsExpanded():
-            self.npanel.book.InvalidateBestSize()
-            height = self.npanel.GetSizer().GetMinSize().height
-            self.npanel.SetMinSize((-1, height))
-            self.npanel.SetSize((-1, height))
-            item.InvalidateBestSize()
-            item.ResizePanel()
-        y_needed = self.fold_panel.GetPanelsLength(0, 0)[2]
+        x_current, _ = self.GetSize()
+        # Fallback to -1 so GridBagSizer can stretch it horizontally
+        if x_current <= 20:
+            x_current = -1
 
-        self.SetMinSize((-1, y_needed))
+        if is_expanded:
+            y_needed = 240 if sys.platform != "win32" else 230
+        else:
+            y_needed = self.fold_panel.GetPanelsLength(0, 0)[2]
+
+        self.SetMinSize((x_current, y_needed))
 
         parent = self.GetParent()
         if parent:
@@ -280,7 +310,7 @@ class UpperTaskPanel(wx.Panel):
                 (_("Export data"), exporter.TaskPanel),
             ]
 
-        elif mode == const.MODE_NAVIGATOR:
+        elif mode in const.NAVIGATION_MODES:
             tasks = [
                 (_("Imports Section"), imports.TaskPanel),
                 (_("Navigation Section"), navigator.TaskPanel),
@@ -333,7 +363,7 @@ class UpperTaskPanel(wx.Panel):
         self.__bind_events()
 
         # Show the navigation panel in navigation mode; otherwise, show the imports panel
-        if mode == const.MODE_NAVIGATOR:
+        if mode in const.NAVIGATION_MODES:
             self.fold_panel.Expand(self.fold_panel.GetFoldPanel(1))
         else:
             self.fold_panel.Expand(self.fold_panel.GetFoldPanel(0))
@@ -369,7 +399,7 @@ class UpperTaskPanel(wx.Panel):
         mode = session.GetConfig("mode")
         self.fold_panel.Expand(self.fold_panel.GetFoldPanel(0))
         for item in self.enable_items:
-            if mode != const.MODE_NAVIGATOR:
+            if mode not in const.NAVIGATION_MODES:
                 item.Disable()
 
     def SetStateProjectOpen(self):

@@ -111,7 +111,7 @@ class InteractiveShellFrame(wx.Frame):
         """Add navigation-related objects to the shell context."""
         mode = ses.Session().GetConfig("mode")
         navigation_context = {}
-        if mode == const.MODE_NAVIGATOR:
+        if mode in const.NAVIGATION_MODES:
             navigation_context["markers"] = MarkersControl()
             navigation_context["navigation"] = Navigation()
             navigation_context["robots"] = Robots()

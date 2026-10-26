@@ -29,11 +29,23 @@ from invesalius.utils import Singleton
 
 
 class MarkersControl(metaclass=Singleton):
-    def __init__(self, navigation) -> None:
+    def __init__(self, navigation=None) -> None:
         self.list: List[Marker] = []
         self.nav_status = False
         self.navigation = navigation
         self.transformator = MarkerTransformator()
+
+    def _resolve_navigation(self):
+        if self.navigation is not None:
+            return self.navigation
+
+        try:
+            from invesalius.navigation.navigation import Navigation
+        except ImportError:
+            return None
+
+        self.navigation = Navigation()
+        return self.navigation
 
     def SaveState(self) -> None:
         state = [marker.to_dict() for marker in self.list]
@@ -140,8 +152,12 @@ class MarkersControl(metaclass=Singleton):
         if check_for_previous and previous_target is not None and previous_target is not marker:
             self.UnsetTarget(previous_target.marker_id)
 
+        navigation = self._resolve_navigation()
+        if navigation is None:
+            raise RuntimeError("Navigation is not available for marker target selection")
+
         # Set new target
-        self.navigation.SetTarget(marker)
+        navigation.SetTarget(marker)
         marker.is_target = True
 
         Publisher.sendMessage("Set target", marker=marker)
@@ -175,7 +191,9 @@ class MarkersControl(metaclass=Singleton):
 
     def UnsetTarget(self, marker_id: int) -> None:
         marker = self.list[marker_id]
-        self.navigation.UnsetTarget()
+        navigation = self._resolve_navigation()
+        if navigation is not None:
+            navigation.UnsetTarget()
         marker.is_target = False
 
         Publisher.sendMessage("Set target transparency", marker=marker, transparent=False)

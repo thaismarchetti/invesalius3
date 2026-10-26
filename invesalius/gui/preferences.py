@@ -51,7 +51,7 @@ class Preferences(wx.Dialog):
 
         session = ses.Session()
         mode = session.GetConfig("mode")
-        if mode == const.MODE_NAVIGATOR:
+        if mode in const.NAVIGATION_MODES:
             tracker = Tracker()
             robots = Robots()
 
@@ -64,11 +64,13 @@ class Preferences(wx.Dialog):
 
             self.navigation_tab = NavigationTab(self.book, navigation)
             self.tracker_tab = TrackerTab(self.book, tracker, robots, navigation)
-            self.object_tab = ObjectTab(self.book, navigation, tracker, pedal_connector, robots)
-
             self.book.AddPage(self.navigation_tab, _("Navigation"))
             self.book.AddPage(self.tracker_tab, _("Tracker"))
-            self.book.AddPage(self.object_tab, _("TMS Coil"))
+            if mode == const.MODE_NAVIGATOR:
+                self.object_tab = ObjectTab(
+                    self.book, navigation, tracker, pedal_connector, robots
+                )
+                self.book.AddPage(self.object_tab, _("TMS Coil"))
 
         self.book.AddPage(self.language_tab, _("Language"))
         self.book.AddPage(self.network, _("Network"))
